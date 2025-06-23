@@ -193,24 +193,206 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
                 content_parts.append(f"Page content: {clean_text}")
         
         # Video XBlocks with transcripts
-        if self.include_video_transcripts:
-            if hasattr(xblock, 'transcript') and xblock.transcript:
-                content_parts.append(f"Video transcript: {xblock.transcript}")
-            
-            # Check for transcript in different possible locations
-            transcript_fields = ['transcript_download', 'transcript_text', 'transcripts']
-            for field in transcript_fields:
-                if hasattr(xblock, field):
-                    transcript_data = getattr(xblock, field)
-                    if transcript_data:
-                        content_parts.append(f"Video transcript: {str(transcript_data)}")
-                        break
+        if self.include_video_transcripts and hasattr(xblock, 'category') and xblock.category == 'video':
+            transcript_content = self._get_video_transcript_content(xblock)
+            if transcript_content:
+                content_parts.append(f"Video transcript: {transcript_content}")
         
         # Problem XBlocks
         if hasattr(xblock, 'problem_text') and xblock.problem_text:
             content_parts.append(f"Problem content: {xblock.problem_text}")
+        elif hasattr(xblock, 'data') and hasattr(xblock, 'category') and xblock.category == 'problem':
+            # Extract problem content from problem XBlocks
+            problem_content = self._extract_problem_content(xblock)
+            if problem_content:
+                content_parts.append(f"Problem content: {problem_content}")
             
         return '\n'.join(content_parts)
+
+    def _get_video_transcript_content(self, video_xblock):
+        """Extract actual transcript content from video XBlocks"""
+        try:
+            # Method 1: Check for transcript data in video XBlock fields
+            if hasattr(video_xblock, 'transcript'):
+                transcript_data = video_xblock.transcript
+                if transcript_data and isinstance(transcript_data, dict):
+                    # Extract text content from transcript entries
+                    transcript_text = self._parse_transcript_data(transcript_data)
+                    if transcript_text:
+                        return transcript_text
+            
+            # Method 2: Check transcripts field (Open edX stores transcripts here)
+            if hasattr(video_xblock, 'transcripts') and video_xblock.transcripts:
+                transcripts = video_xblock.transcripts
+                if isinstance(transcripts, dict):
+                    # Get the first available transcript
+                    for lang, transcript_file in transcripts.items():
+                        if transcript_file:
+                            transcript_content = self._load_transcript_file(transcript_file, video_xblock)
+                            if transcript_content:
+                                return transcript_content
+            
+            # Method 3: Check for sub (subtitle) field
+            if hasattr(video_xblock, 'sub') and video_xblock.sub:
+                transcript_content = self._load_transcript_file(video_xblock.sub, video_xblock)
+                if transcript_content:
+                    return transcript_content
+            
+            # Method 4: Check for available_translations
+            if hasattr(video_xblock, 'available_translations') and video_xblock.available_translations:
+                for lang in video_xblock.available_translations:
+                    transcript_content = self._get_transcript_for_language(video_xblock, lang)
+                    if transcript_content:
+                        return transcript_content
+                        
+            return None
+            
+        except Exception as e:
+            # Log error but don't break the content extraction
+            return None
+
+    def _parse_transcript_data(self, transcript_data):
+        """Parse transcript data structure to extract text content"""
+        try:
+            if isinstance(transcript_data, str):
+                return transcript_data
+            elif isinstance(transcript_data, dict):
+                # Common transcript formats
+                text_parts = []
+                
+                # Format 1: Direct text entries
+                if 'text' in transcript_data:
+                    return transcript_data['text']
+                
+                # Format 2: Timed entries with text
+                if 'entries' in transcript_data:
+                    entries = transcript_data['entries']
+                    if isinstance(entries, list):
+                        for entry in entries:
+                            if isinstance(entry, dict) and 'text' in entry:
+                                text_parts.append(entry['text'])
+                
+                # Format 3: SRT-like format with timestamps
+                for key, value in transcript_data.items():
+                    if isinstance(value, dict) and 'text' in value:
+                        text_parts.append(value['text'])
+                    elif isinstance(value, str) and len(value) > 10:  # Likely text content
+                        text_parts.append(value)
+                
+                return ' '.join(text_parts) if text_parts else None
+            elif isinstance(transcript_data, list):
+                # List of transcript entries
+                text_parts = []
+                for entry in transcript_data:
+                    if isinstance(entry, dict) and 'text' in entry:
+                        text_parts.append(entry['text'])
+                    elif isinstance(entry, str):
+                        text_parts.append(entry)
+                return ' '.join(text_parts) if text_parts else None
+                
+            return None
+        except Exception:
+            return None
+
+    def _load_transcript_file(self, transcript_identifier, video_xblock):
+        """Load transcript content from file or URL"""
+        try:
+            # This would need to be implemented based on how your Open edX instance
+            # stores transcripts. Common patterns:
+            
+            # Method 1: Try to get transcript via the video XBlock's transcript handler
+            if hasattr(video_xblock, 'get_transcript'):
+                try:
+                    transcript_content = video_xblock.get_transcript()
+                    if transcript_content:
+                        return self._parse_transcript_content(transcript_content)
+                except Exception:
+                    pass
+            
+            # Method 2: Try runtime transcript service
+            if hasattr(self.runtime, 'service') and hasattr(video_xblock, 'location'):
+                try:
+                    transcript_service = self.runtime.service(video_xblock, 'transcript')
+                    if transcript_service:
+                        transcript_content = transcript_service.get_transcript(
+                            video_id=transcript_identifier,
+                            language='en'  # Default to English, could be made configurable
+                        )
+                        if transcript_content:
+                            return self._parse_transcript_content(transcript_content)
+                except Exception:
+                    pass
+            
+            # Method 3: Direct field access for simple cases
+            if hasattr(video_xblock, 'transcript_text'):
+                return video_xblock.transcript_text
+                
+            return None
+            
+        except Exception:
+            return None
+
+    def _get_transcript_for_language(self, video_xblock, language):
+        """Get transcript for a specific language"""
+        try:
+            if hasattr(video_xblock, 'get_transcript'):
+                transcript_content = video_xblock.get_transcript(language=language)
+                if transcript_content:
+                    return self._parse_transcript_content(transcript_content)
+            return None
+        except Exception:
+            return None
+
+    def _parse_transcript_content(self, content):
+        """Parse raw transcript content (SRT, VTT, or plain text)"""
+        try:
+            if isinstance(content, dict):
+                return self._parse_transcript_data(content)
+            elif isinstance(content, str):
+                # Remove SRT/VTT timestamps and formatting
+                lines = content.split('\n')
+                text_lines = []
+                
+                for line in lines:
+                    line = line.strip()
+                    # Skip empty lines, numbers, and timestamp lines
+                    if (line and 
+                        not line.isdigit() and 
+                        '-->' not in line and 
+                        not line.startswith('WEBVTT') and
+                        not line.startswith('NOTE')):
+                        # Remove HTML tags if present
+                        clean_line = re.sub(r'<[^>]+>', '', line)
+                        if clean_line.strip():
+                            text_lines.append(clean_line.strip())
+                
+                return ' '.join(text_lines) if text_lines else None
+            
+            return None
+        except Exception:
+            return None
+
+    def _extract_problem_content(self, problem_xblock):
+        """Extract meaningful text from problem XBlocks"""
+        try:
+            if hasattr(problem_xblock, 'data') and problem_xblock.data:
+                # Parse XML/HTML content to extract problem text
+                problem_html = str(problem_xblock.data)
+                
+                # Remove script and style elements
+                problem_html = re.sub(r'<script[^>]*>.*?</script>', '', problem_html, flags=re.DOTALL | re.IGNORECASE)
+                problem_html = re.sub(r'<style[^>]*>.*?</style>', '', problem_html, flags=re.DOTALL | re.IGNORECASE)
+                
+                # Extract text content
+                clean_text = re.sub(r'<[^>]+>', ' ', problem_html)
+                clean_text = re.sub(r'\s+', ' ', clean_text).strip()
+                
+                if clean_text and len(clean_text) > 20:
+                    return clean_text
+                    
+            return None
+        except Exception:
+            return None
 
     def build_enhanced_context(self):
         """Build context that includes page content"""

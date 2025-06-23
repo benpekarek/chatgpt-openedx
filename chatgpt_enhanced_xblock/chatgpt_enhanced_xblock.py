@@ -315,10 +315,10 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         if not hasattr(xblock, 'category') or xblock.category != 'video':
             return ""
         
-        # First, try to extract transcript content normally
+        # Always try simple extraction first (using proven working methods)
         transcript_content = self._extract_transcript_simple(xblock)
         
-        # If testing mode is enabled, run comprehensive tests but don't include in content
+        # If testing mode is enabled, run comprehensive tests and store results separately
         if self.test_transcript_extraction:
             test_results = self._run_comprehensive_transcript_tests(xblock)
             # Store test results separately - they should be shown in debug output, not sent to ChatGPT
@@ -327,27 +327,56 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         return transcript_content
 
     def _extract_transcript_simple(self, xblock):
-        """Simple transcript extraction - just get the content without debug info"""
+        """Simple transcript extraction using proven working methods"""
         try:
-            # Method 1: Try calling the transcript() method directly
-            if hasattr(xblock, 'transcript') and callable(xblock.transcript):
-                try:
-                    transcript_result = xblock.transcript(None)
-                    if transcript_result:
-                        if hasattr(transcript_result, 'content'):
-                            content = transcript_result.content
-                        else:
-                            content = str(transcript_result)
-                        
+            video_id = getattr(xblock, 'edx_video_id', None)
+            if not video_id:
+                return ""
+            
+            # METHOD 1 (Primary): Use proven edxval.api.get_video_transcript_data
+            try:
+                from edxval import api as edxval_api
+                
+                if hasattr(edxval_api, 'get_video_transcript_data'):
+                    transcript_data = edxval_api.get_video_transcript_data(video_id, language_code='en')
+                    if transcript_data and 'content' in transcript_data:
+                        content = transcript_data['content']
+                        if isinstance(content, bytes):
+                            content = content.decode('utf-8')
                         parsed_content = self._parse_transcript_content(content)
                         if parsed_content:
                             return parsed_content
-                except Exception:
-                    pass
+            except Exception:
+                pass
             
-            # Method 2: Try getting transcript via transcripts attribute and file loading
-            if hasattr(xblock, 'transcripts') and xblock.transcripts:
-                try:
+            # METHOD 2 (Secondary): Use proven VideoTranscript model access
+            try:
+                from edxval.models import VideoTranscript, Video
+                
+                # Find the Video object
+                video_obj = Video.objects.get(edx_video_id=video_id)
+                
+                # Get transcripts for this video
+                transcripts = VideoTranscript.objects.filter(video=video_obj, language_code='en')
+                if transcripts.exists():
+                    transcript_obj = transcripts.first()
+                    
+                    # Read the transcript file
+                    if hasattr(transcript_obj, 'transcript') and transcript_obj.transcript:
+                        transcript_file = transcript_obj.transcript
+                        if hasattr(transcript_file, 'read'):
+                            content = transcript_file.read()
+                            if isinstance(content, bytes):
+                                content = content.decode('utf-8')
+                            parsed_content = self._parse_transcript_content(content)
+                            if parsed_content:
+                                return parsed_content
+            except Exception:
+                pass
+            
+            # METHOD 3 (Fallback): Try transcripts attribute with file loading (legacy)
+            try:
+                if hasattr(xblock, 'transcripts') and xblock.transcripts:
                     transcripts_dict = xblock.transcripts
                     lang = getattr(xblock, 'transcript_language', 'en')
                     if lang in transcripts_dict:
@@ -357,20 +386,29 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
                             parsed_content = self._parse_transcript_content(file_content)
                             if parsed_content:
                                 return parsed_content
-                except Exception:
-                    pass
+            except Exception:
+                pass
             
-            # Method 3: Try using edx_video_id to get transcript
-            if hasattr(xblock, 'edx_video_id') and xblock.edx_video_id:
-                try:
-                    video_id = xblock.edx_video_id
-                    transcript_data = self._get_transcript_by_video_id(xblock, video_id)
-                    if transcript_data:
-                        parsed_content = self._parse_transcript_content(transcript_data)
+            # METHOD 4 (Last resort): Try calling transcript() method
+            try:
+                if hasattr(xblock, 'transcript') and callable(xblock.transcript):
+                    from django.http import HttpRequest
+                    
+                    request = HttpRequest()
+                    request.method = 'GET'
+                    request.GET = {}
+                    request.POST = {}
+                    
+                    transcript_response = xblock.transcript(request)
+                    if transcript_response and hasattr(transcript_response, 'content'):
+                        content = transcript_response.content
+                        if isinstance(content, bytes):
+                            content = content.decode('utf-8')
+                        parsed_content = self._parse_transcript_content(content)
                         if parsed_content:
                             return parsed_content
-                except Exception:
-                    pass
+            except Exception:
+                pass
             
             return ""
             

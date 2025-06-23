@@ -115,6 +115,14 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         help="Maximum characters of page content to include (to manage token usage)"
     )
 
+    # Debug mode
+    debug_mode = Boolean(
+        display_name="Debug Mode",
+        default=False,
+        scope=Scope.settings,
+        help="Show the full prompt being sent to ChatGPT for debugging"
+    )
+
     # Student-specific fields
     conversation_history = List(
         default=[],
@@ -136,7 +144,8 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         'max_conversation_length',
         'include_page_content',
         'include_video_transcripts',
-        'max_content_length'
+        'max_content_length',
+        'debug_mode'
     ]
 
     def resource_string(self, path):
@@ -153,31 +162,53 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
             # Get the parent unit
             parent = self.get_parent()
             if not parent:
+                if self.debug_mode:
+                    return "DEBUG: No parent found"
                 return ""
             
             content_parts = []
+            debug_parts = []
+            
+            if self.debug_mode:
+                debug_parts.append(f"DEBUG: Parent found: {parent.__class__.__name__}, children: {len(parent.children) if hasattr(parent, 'children') else 'no children attr'}")
             
             # Walk through all children of the unit to collect content
-            for child_id in parent.children:
-                try:
-                    child = self.runtime.get_block(child_id)
-                    if child and child != self:  # Don't include ourselves
-                        # Extract text content from various XBlock types
-                        content = self._extract_content_from_xblock(child)
-                        if content:
-                            content_parts.append(content)
+            if hasattr(parent, 'children'):
+                for i, child_id in enumerate(parent.children):
+                    try:
+                        child = self.runtime.get_block(child_id)
+                        if child and child != self:  # Don't include ourselves
+                            if self.debug_mode:
+                                debug_parts.append(f"DEBUG: Child {i}: {child.__class__.__name__}, category: {getattr(child, 'category', 'no category')}")
                             
-                except Exception:
-                    continue
+                            # Extract text content from various XBlock types
+                            content = self._extract_content_from_xblock(child)
+                            if content:
+                                content_parts.append(content)
+                                if self.debug_mode:
+                                    debug_parts.append(f"DEBUG: Extracted content from child {i}: {content[:100]}...")
+                            elif self.debug_mode:
+                                debug_parts.append(f"DEBUG: No content extracted from child {i}")
+                                
+                    except Exception as e:
+                        if self.debug_mode:
+                            debug_parts.append(f"DEBUG: Error processing child {i}: {str(e)}")
+                        continue
             
             # Combine and limit content
             combined_content = '\n\n'.join(content_parts)
             if len(combined_content) > self.max_content_length:
                 combined_content = combined_content[:self.max_content_length] + "..."
+            
+            if self.debug_mode:
+                debug_parts.append(f"DEBUG: Final combined content length: {len(combined_content)}")
+                return '\n'.join(debug_parts) + '\n\nACTUAL CONTENT:\n' + combined_content
                 
             return combined_content
             
-        except Exception:
+        except Exception as e:
+            if self.debug_mode:
+                return f"DEBUG: Exception in get_page_content: {str(e)}"
             return ""
 
     def _extract_content_from_xblock(self, xblock):
@@ -499,6 +530,20 @@ Use this course content to provide relevant, accurate answers. Reference specifi
         # Build enhanced context with page content
         enhanced_context = self.build_enhanced_context()
 
+        # Debug mode: show what content was extracted
+        debug_info = ""
+        if self.debug_mode:
+            page_content = self.get_page_content()
+            debug_info = f"""
+**DEBUG INFO:**
+Raw page content extracted: {repr(page_content)}
+
+Enhanced context being sent to ChatGPT:
+{enhanced_context}
+
+---
+"""
+
         # Handle conversation history
         if self.enable_multi_turn:
             # Add user's question to conversation history
@@ -517,6 +562,15 @@ Use this course content to provide relevant, accurate answers. Reference specifi
                 {"role": "system", "content": enhanced_context},
                 {"role": "user", "content": question}
             ]
+
+        # Debug mode: add messages info
+        if self.debug_mode:
+            debug_info += f"""
+Messages being sent to OpenAI:
+{messages}
+
+---
+"""
 
         # Call ChatGPT API
         try:
@@ -541,6 +595,10 @@ Use this course content to provide relevant, accurate answers. Reference specifi
         # Add assistant's answer to conversation history (if multi-turn enabled)
         if self.enable_multi_turn:
             self.conversation_history.append({"role": "assistant", "content": content})
+
+        # Prepend debug info if debug mode is enabled
+        if self.debug_mode:
+            content = debug_info + content
 
         return {"answer": content}
 

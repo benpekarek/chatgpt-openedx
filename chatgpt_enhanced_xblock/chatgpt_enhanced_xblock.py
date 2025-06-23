@@ -389,36 +389,52 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
                 'content_preview': content_preview[:200] + "..." if len(content_preview) > 200 else content_preview
             })
         
-        # METHOD 1: Try calling the transcript() method with proper dispatch
+        # METHOD 1: Try calling the transcript() method with proper request
         try:
             if hasattr(xblock, 'transcript'):
                 try:
-                    # Try with mock dispatch first
-                    class MockRequest:
-                        def __init__(self):
-                            self.GET = {}
-                            self.POST = {}
+                    # Create a proper Django request-like object
+                    from django.http import HttpRequest
                     
-                    mock_request = MockRequest()
-                    transcript_response = xblock.transcript(mock_request)
+                    request = HttpRequest()
+                    request.method = 'GET'
+                    request.GET = {}
+                    request.POST = {}
+                    
+                    # Try with Django request
+                    transcript_response = xblock.transcript(request)
                     if transcript_response and hasattr(transcript_response, 'content'):
-                        content = transcript_response.content.decode('utf-8')
-                        add_result("METHOD 1", "✅", "xblock.transcript() with mock request", content)
+                        content = transcript_response.content
+                        if isinstance(content, bytes):
+                            content = content.decode('utf-8')
+                        parsed_content = self._parse_transcript_content(content)
+                        add_result("METHOD 1", "✅", "xblock.transcript() with Django request", parsed_content)
                     else:
                         add_result("METHOD 1", "❌", "xblock.transcript() returned empty response")
-                except Exception as dispatch_error:
-                    # Try without dispatch parameter 
+                        
+                except Exception as django_error:
+                    # Try with simple mock object
                     try:
-                        transcript_data = xblock.transcript()
-                        add_result("METHOD 1", "✅", "xblock.transcript() direct call", str(transcript_data))
-                    except Exception as direct_error:
-                        add_result("METHOD 1", "❌", f"xblock.transcript() error: {str(dispatch_error)}")
+                        class SimpleRequest:
+                            def __init__(self):
+                                self.GET = {}
+                                self.POST = {}
+                                self.method = 'GET'
+                        
+                        simple_request = SimpleRequest()
+                        transcript_response = xblock.transcript(simple_request)
+                        if transcript_response:
+                            add_result("METHOD 1", "✅", "xblock.transcript() with simple request", str(transcript_response))
+                        else:
+                            add_result("METHOD 1", "❌", f"Django request failed: {str(django_error)}")
+                    except Exception as simple_error:
+                        add_result("METHOD 1", "❌", f"Both request methods failed: {str(simple_error)}")
             else:
                 add_result("METHOD 1", "❌", "xblock.transcript() method not available")
         except Exception as e:
             add_result("METHOD 1", "❌", f"METHOD 1 error: {str(e)}")
         
-        # METHOD 2: Enhanced file loading from transcripts attribute
+        # METHOD 2: Enhanced file loading with correct API signatures
         try:
             if hasattr(xblock, 'transcripts') and xblock.transcripts:
                 add_result("METHOD 2", "✅", f"Found transcripts dict: {xblock.transcripts}")
@@ -426,64 +442,87 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
                 for lang, filename in xblock.transcripts.items():
                     add_result("METHOD 2", "ℹ️", f"Trying to load transcript file: {filename}")
                     
-                    # Try multiple file loading approaches
                     transcript_content = None
                     
-                    # Approach 2a: Try contentstore access
-                    try:
-                        from openedx.core.lib.file_storage import get_storage
-                        from django.conf import settings
-                        
-                        storage = get_storage()
-                        if storage.exists(f"transcripts/{filename}"):
-                            with storage.open(f"transcripts/{filename}") as f:
-                                transcript_content = f.read().decode('utf-8')
-                                add_result("METHOD 2a", "✅", f"Loaded via contentstore: {filename}", transcript_content)
-                                break
-                    except Exception as storage_error:
-                        add_result("METHOD 2a", "❌", f"Contentstore access failed: {str(storage_error)}")
-                    
-                    # Approach 2b: Try modulestore access
+                    # Approach 2a: Try correct modulestore API
                     try:
                         from xmodule.modulestore.django import modulestore
-                        from opaque_keys.edx.keys import UsageKey
                         
                         if hasattr(xblock, 'location'):
                             store = modulestore()
-                            # Try to find transcript in static assets
                             course_key = xblock.location.course_key
-                            transcript_location = f"transcripts/{filename}"
                             
-                            # This might work for some Open edX configurations
-                            asset_content = store.find_asset_metadata(course_key, transcript_location)
-                            if asset_content:
-                                add_result("METHOD 2b", "✅", f"Found asset metadata for {filename}")
-                            else:
-                                add_result("METHOD 2b", "❌", f"No asset metadata found for {filename}")
+                            # Try to get the asset directly
+                            asset_key = course_key.make_asset_key('asset', filename)
+                            try:
+                                asset_content = store.find(asset_key)
+                                if asset_content and hasattr(asset_content, 'data'):
+                                    transcript_content = asset_content.data.decode('utf-8')
+                                    parsed_content = self._parse_transcript_content(transcript_content)
+                                    add_result("METHOD 2a", "✅", f"Loaded via modulestore.find(): {filename}", parsed_content)
+                                    break
+                                else:
+                                    add_result("METHOD 2a", "❌", f"Asset found but no data: {filename}")
+                            except Exception as find_error:
+                                add_result("METHOD 2a", "❌", f"modulestore.find() failed: {str(find_error)}")
                                 
                     except Exception as modulestore_error:
-                        add_result("METHOD 2b", "❌", f"Modulestore access failed: {str(modulestore_error)}")
+                        add_result("METHOD 2a", "❌", f"Modulestore access failed: {str(modulestore_error)}")
                     
-                    # Approach 2c: Try direct file system access (for development)
+                    # Approach 2b: Try contentstore access with correct import
+                    try:
+                        from xmodule.contentstore.content import StaticContent
+                        from xmodule.modulestore.django import modulestore
+                        
+                        if hasattr(xblock, 'location'):
+                            course_key = xblock.location.course_key
+                            store = modulestore()
+                            
+                            # Try different asset key formats
+                            possible_keys = [
+                                course_key.make_asset_key('asset', filename),
+                                course_key.make_asset_key('asset', f'transcripts/{filename}'),
+                                course_key.make_asset_key('asset', f'subs_{filename}'),
+                            ]
+                            
+                            for asset_key in possible_keys:
+                                try:
+                                    content = StaticContent.get(asset_key)
+                                    if content:
+                                        transcript_content = content.data.decode('utf-8')
+                                        parsed_content = self._parse_transcript_content(transcript_content)
+                                        add_result("METHOD 2b", "✅", f"Loaded via StaticContent: {asset_key}", parsed_content)
+                                        break
+                                except Exception:
+                                    continue
+                                    
+                            if not transcript_content:
+                                add_result("METHOD 2b", "❌", f"StaticContent not found for any key variant")
+                                
+                    except Exception as content_error:
+                        add_result("METHOD 2b", "❌", f"StaticContent access failed: {str(content_error)}")
+                    
+                    # Approach 2c: Try direct file system access
                     try:
                         import os
-                        from django.conf import settings
                         
                         possible_paths = [
                             f"/openedx/data/transcripts/{filename}",
-                            f"/openedx/edx-platform/transcripts/{filename}",
-                            f"{settings.MEDIA_ROOT}/transcripts/{filename}" if hasattr(settings, 'MEDIA_ROOT') else None,
+                            f"/openedx/data/uploads/{filename}",
+                            f"/tmp/transcripts/{filename}",
+                            f"/edx/var/edxapp/media/transcripts/{filename}",
                         ]
                         
                         for path in possible_paths:
-                            if path and os.path.exists(path):
+                            if os.path.exists(path):
                                 with open(path, 'r', encoding='utf-8') as f:
                                     transcript_content = f.read()
-                                    add_result("METHOD 2c", "✅", f"Loaded via filesystem: {path}", transcript_content)
+                                    parsed_content = self._parse_transcript_content(transcript_content)
+                                    add_result("METHOD 2c", "✅", f"Loaded via filesystem: {path}", parsed_content)
                                     break
                         
                         if not transcript_content:
-                            add_result("METHOD 2c", "❌", f"File not found in any expected location")
+                            add_result("METHOD 2c", "❌", f"File not found in filesystem")
                             
                     except Exception as fs_error:
                         add_result("METHOD 2c", "❌", f"Filesystem access failed: {str(fs_error)}")
@@ -496,30 +535,74 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         except Exception as e:
             add_result("METHOD 2", "❌", f"METHOD 2 error: {str(e)}")
         
-        # METHOD 3: Enhanced Video API using edx_video_id
+        # METHOD 3: Enhanced Video API with correct edxval calls
         try:
             video_id = getattr(xblock, 'edx_video_id', None)
             if video_id:
                 add_result("METHOD 3", "✅", f"Trying edx_video_id: {video_id}")
                 
-                # Try multiple video API approaches
+                # Try actual available edxval functions
                 try:
-                    from edxval.api import get_video_transcript_content
-                    transcript_content = get_video_transcript_content(video_id, language_code='en')
-                    if transcript_content:
-                        add_result("METHOD 3a", "✅", "Got transcript via edxval.api.get_video_transcript_content", transcript_content)
-                    else:
-                        add_result("METHOD 3a", "❌", "edxval.api returned empty content")
+                    from edxval import api as edxval_api
+                    
+                    # Check what functions are actually available
+                    available_functions = [func for func in dir(edxval_api) if 'transcript' in func.lower()]
+                    add_result("METHOD 3a", "ℹ️", f"Available edxval functions: {available_functions}")
+                    
+                    # Try get_video_transcript_data if available
+                    if hasattr(edxval_api, 'get_video_transcript_data'):
+                        transcript_data = edxval_api.get_video_transcript_data(video_id, language_code='en')
+                        if transcript_data:
+                            add_result("METHOD 3a", "✅", "Got transcript via get_video_transcript_data", str(transcript_data))
+                        else:
+                            add_result("METHOD 3a", "❌", "get_video_transcript_data returned empty")
+                    
+                    # Try get_3rd_party_transcription_plans
+                    if hasattr(edxval_api, 'get_3rd_party_transcription_plans'):
+                        plans = edxval_api.get_3rd_party_transcription_plans()
+                        add_result("METHOD 3a", "ℹ️", f"Transcription plans: {plans}")
+                        
                 except Exception as api_error:
-                    add_result("METHOD 3a", "❌", f"edxval.api failed: {str(api_error)}")
+                    add_result("METHOD 3a", "❌", f"edxval.api exploration failed: {str(api_error)}")
                 
+                # Try VideoTranscript model with correct field access
                 try:
-                    from edxval.models import VideoTranscript
-                    transcript_obj = VideoTranscript.objects.filter(video__edx_video_id=video_id, language_code='en').first()
-                    if transcript_obj:
-                        add_result("METHOD 3b", "✅", f"Found VideoTranscript object: {transcript_obj.file_format}", transcript_obj.transcript)
-                    else:
-                        add_result("METHOD 3b", "❌", "No VideoTranscript object found in database")
+                    from edxval.models import VideoTranscript, Video
+                    
+                    # First try to find the Video object
+                    try:
+                        video_obj = Video.objects.get(edx_video_id=video_id)
+                        add_result("METHOD 3b", "✅", f"Found Video object: {video_obj}")
+                        
+                        # Now get transcripts for this video
+                        transcripts = VideoTranscript.objects.filter(video=video_obj, language_code='en')
+                        if transcripts.exists():
+                            transcript_obj = transcripts.first()
+                            add_result("METHOD 3b", "✅", f"Found VideoTranscript: format={transcript_obj.file_format}")
+                            
+                            # Try to read the transcript file
+                            if hasattr(transcript_obj, 'transcript') and transcript_obj.transcript:
+                                try:
+                                    # transcript is a FileField, need to read it properly
+                                    transcript_file = transcript_obj.transcript
+                                    if hasattr(transcript_file, 'read'):
+                                        content = transcript_file.read()
+                                        if isinstance(content, bytes):
+                                            content = content.decode('utf-8')
+                                        parsed_content = self._parse_transcript_content(content)
+                                        add_result("METHOD 3b", "✅", f"Read transcript file content", parsed_content)
+                                    else:
+                                        add_result("METHOD 3b", "❌", f"Transcript file not readable: {type(transcript_file)}")
+                                except Exception as read_error:
+                                    add_result("METHOD 3b", "❌", f"Error reading transcript file: {str(read_error)}")
+                            else:
+                                add_result("METHOD 3b", "❌", "VideoTranscript object has no transcript file")
+                        else:
+                            add_result("METHOD 3b", "❌", "No VideoTranscript objects found")
+                            
+                    except Video.DoesNotExist:
+                        add_result("METHOD 3b", "❌", f"Video object not found for edx_video_id: {video_id}")
+                        
                 except Exception as model_error:
                     add_result("METHOD 3b", "❌", f"VideoTranscript model access failed: {str(model_error)}")
                     
@@ -528,32 +611,46 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         except Exception as e:
             add_result("METHOD 3", "❌", f"METHOD 3 error: {str(e)}")
         
-        # METHOD 4: Enhanced available_translations() method
+        # METHOD 4: Fixed available_translations() method calls
         try:
             if hasattr(xblock, 'available_translations'):
                 try:
-                    # Try with transcripts parameter
-                    transcripts_dict = getattr(xblock, 'transcripts', {})
-                    available_langs = xblock.available_translations(transcripts_dict)
-                    add_result("METHOD 4a", "✅", f"Available translations: {available_langs}")
+                    # Try without parameters first (most likely to work)
+                    available_langs = xblock.available_translations()
+                    add_result("METHOD 4a", "✅", f"Available translations (no params): {available_langs}")
                     
-                    # Try to get content for each available language
+                    # If successful, try to get content for each language
                     for lang in available_langs:
                         try:
-                            # This is a guess at the API - might need adjustment
-                            content = xblock.get_transcript(lang)
-                            if content:
-                                add_result("METHOD 4b", "✅", f"Got transcript content for {lang}", content)
+                            # Try various methods to get transcript content by language
+                            methods_to_try = [
+                                ('get_transcript', lambda: getattr(xblock, 'get_transcript', lambda x: None)(lang)),
+                                ('transcript_download_handler', lambda: getattr(xblock, 'transcript_download_handler', lambda x: None)(lang)),
+                                ('sub_attr', lambda: getattr(xblock, 'sub', None)),
+                            ]
+                            
+                            for method_name, method_call in methods_to_try:
+                                try:
+                                    content = method_call()
+                                    if content:
+                                        add_result("METHOD 4b", "✅", f"Got content via {method_name} for {lang}", str(content)[:200])
+                                        break
+                                except Exception:
+                                    continue
+                            else:
+                                add_result("METHOD 4b", "❌", f"No content retrieval method worked for {lang}")
+                                
                         except Exception as content_error:
                             add_result("METHOD 4b", "❌", f"Failed to get content for {lang}: {str(content_error)}")
-                            
-                except Exception as trans_error:
-                    # Try without parameters
+                    
+                except Exception as no_param_error:
+                    # Try with transcripts parameter as backup
                     try:
-                        available_langs = xblock.available_translations()
-                        add_result("METHOD 4c", "✅", f"Available translations (no params): {available_langs}")
-                    except Exception as no_param_error:
-                        add_result("METHOD 4", "❌", f"available_translations() error: {str(trans_error)}")
+                        transcripts_dict = getattr(xblock, 'transcripts', {})
+                        available_langs = xblock.available_translations(transcripts_dict)
+                        add_result("METHOD 4c", "✅", f"Available translations (with transcripts): {available_langs}")
+                    except Exception as with_param_error:
+                        add_result("METHOD 4", "❌", f"available_translations() failed both ways: {str(no_param_error)}")
             else:
                 add_result("METHOD 4", "❌", "available_translations() method not available")
         except Exception as e:

@@ -120,7 +120,15 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         display_name="Debug Mode",
         default=False,
         scope=Scope.settings,
-        help="Show the full prompt being sent to ChatGPT for debugging"
+        help="Show detailed debugging information (NEVER sent to ChatGPT - only for troubleshooting)"
+    )
+
+    # Transcript testing mode  
+    test_transcript_extraction = Boolean(
+        display_name="Test Transcript Extraction",
+        default=False,
+        scope=Scope.settings,
+        help="Run comprehensive transcript extraction testing (debug only - not sent to ChatGPT)"
     )
 
     # Student-specific fields
@@ -145,7 +153,8 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         'include_page_content',
         'include_video_transcripts',
         'max_content_length',
-        'debug_mode'
+        'debug_mode',
+        'test_transcript_extraction'
     ]
 
     def resource_string(self, path):
@@ -154,7 +163,7 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         return data.decode("utf8")
 
     def get_page_content(self):
-        """Extract content from the current page/unit"""
+        """Extract content from the current page/unit (NEVER includes debug info sent to ChatGPT)"""
         if not self.include_page_content:
             return ""
             
@@ -162,61 +171,86 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
             # Get the parent unit
             parent = self.get_parent()
             if not parent:
-                if self.debug_mode:
-                    return "DEBUG: No parent found"
                 return ""
             
             content_parts = []
-            debug_parts = []
-            
-            if self.debug_mode:
-                debug_parts.append(f"DEBUG: Parent found: {parent.__class__.__name__}, children: {len(parent.children) if hasattr(parent, 'children') else 'no children attr'}")
             
             # Walk through all children of the unit to collect content
             if hasattr(parent, 'children'):
-                for i, child_id in enumerate(parent.children):
+                for child_id in parent.children:
                     try:
                         child = self.runtime.get_block(child_id)
                         if child and child != self:  # Don't include ourselves
-                            if self.debug_mode:
-                                debug_parts.append(f"DEBUG: Child {i}: {child.__class__.__name__}, category: {getattr(child, 'category', 'no category')}")
-                            
                             # Extract text content from various XBlock types
                             content = self._extract_content_from_xblock(child)
                             if content:
                                 content_parts.append(content)
-                                if self.debug_mode:
-                                    debug_parts.append(f"DEBUG: Extracted content from child {i}: {content[:100]}...")
-                            elif self.debug_mode:
-                                debug_parts.append(f"DEBUG: No content extracted from child {i}")
                                 
-                    except Exception as e:
-                        if self.debug_mode:
-                            debug_parts.append(f"DEBUG: Error processing child {i}: {str(e)}")
+                    except Exception:
                         continue
             
             # Combine and limit content
             combined_content = '\n\n'.join(content_parts)
             if len(combined_content) > self.max_content_length:
                 combined_content = combined_content[:self.max_content_length] + "..."
-            
-            if self.debug_mode:
-                debug_parts.append(f"DEBUG: Final combined content length: {len(combined_content)}")
-                return '\n'.join(debug_parts) + '\n\nACTUAL CONTENT:\n' + combined_content
                 
             return combined_content
             
-        except Exception as e:
-            if self.debug_mode:
-                return f"DEBUG: Exception in get_page_content: {str(e)}"
+        except Exception:
             return ""
 
-    def _extract_content_from_xblock(self, xblock):
+    def get_debug_info(self):
+        """Get debug information separately - NEVER sent to ChatGPT"""
+        if not self.debug_mode:
+            return ""
+            
+        debug_parts = []
+        
+        try:
+            # Get the parent unit
+            parent = self.get_parent()
+            if not parent:
+                debug_parts.append("DEBUG: No parent found")
+                return '\n'.join(debug_parts)
+            
+            debug_parts.append(f"DEBUG: Parent found: {parent.__class__.__name__}, children: {len(parent.children) if hasattr(parent, 'children') else 'no children attr'}")
+            
+            # Walk through all children of the unit to collect debug info
+            if hasattr(parent, 'children'):
+                for i, child_id in enumerate(parent.children):
+                    try:
+                        child = self.runtime.get_block(child_id)
+                        if child and child != self:  # Don't include ourselves
+                            debug_parts.append(f"DEBUG: Child {i}: {child.__class__.__name__}, category: {getattr(child, 'category', 'no category')}")
+                            
+                            # Extract text content from various XBlock types
+                            content = self._extract_content_from_xblock(child, debug_mode=True)
+                            if content:
+                                debug_parts.append(f"DEBUG: Extracted content from child {i}: {content[:100]}...")
+                            else:
+                                debug_parts.append(f"DEBUG: No content extracted from child {i}")
+                                
+                    except Exception as e:
+                        debug_parts.append(f"DEBUG: Error processing child {i}: {str(e)}")
+                        continue
+            
+            # Get the actual content that would be sent to ChatGPT
+            page_content = self.get_page_content()
+            debug_parts.append(f"DEBUG: Final combined content length: {len(page_content)}")
+            debug_parts.append("DEBUG: ACTUAL CONTENT SENT TO CHATGPT:")
+            debug_parts.append(page_content)
+            
+            return '\n'.join(debug_parts)
+            
+        except Exception as e:
+            return f"DEBUG: Exception in get_debug_info: {str(e)}"
+
+    def _extract_content_from_xblock(self, xblock, debug_mode=False):
         """Extract meaningful content from different types of XBlocks"""
         content_parts = []
         
         # Debug mode: show all attributes for video blocks
-        if self.debug_mode and hasattr(xblock, 'category') and xblock.category == 'video':
+        if debug_mode and hasattr(xblock, 'category') and xblock.category == 'video':
             debug_attrs = []
             debug_attrs.append(f"VIDEO DEBUG - XBlock type: {type(xblock).__name__}")
             
@@ -262,7 +296,7 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
             transcript_content = self._get_video_transcript_content(xblock)
             if transcript_content:
                 content_parts.append(f"Video transcript: {transcript_content}")
-            elif self.debug_mode:
+            elif debug_mode:
                 content_parts.append("VIDEO DEBUG: No transcript content extracted by _get_video_transcript_content")
         
         # Problem XBlocks
@@ -277,34 +311,97 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         return '\n'.join(content_parts)
 
     def _get_video_transcript_content(self, xblock):
-        """Extract actual transcript content from video XBlocks with comprehensive testing"""
+        """Extract actual transcript content from video XBlocks"""
         if not hasattr(xblock, 'category') or xblock.category != 'video':
             return ""
+        
+        # First, try to extract transcript content normally
+        transcript_content = self._extract_transcript_simple(xblock)
+        
+        # If testing mode is enabled, run comprehensive tests but don't include in content
+        if self.test_transcript_extraction:
+            test_results = self._run_comprehensive_transcript_tests(xblock)
+            # Store test results separately - they should be shown in debug output, not sent to ChatGPT
+            self._transcript_test_results = test_results
+        
+        return transcript_content
+
+    def _extract_transcript_simple(self, xblock):
+        """Simple transcript extraction - just get the content without debug info"""
+        try:
+            # Method 1: Try calling the transcript() method directly
+            if hasattr(xblock, 'transcript') and callable(xblock.transcript):
+                try:
+                    transcript_result = xblock.transcript(None)
+                    if transcript_result:
+                        if hasattr(transcript_result, 'content'):
+                            content = transcript_result.content
+                        else:
+                            content = str(transcript_result)
+                        
+                        parsed_content = self._parse_transcript_content(content)
+                        if parsed_content:
+                            return parsed_content
+                except Exception:
+                    pass
+            
+            # Method 2: Try getting transcript via transcripts attribute and file loading
+            if hasattr(xblock, 'transcripts') and xblock.transcripts:
+                try:
+                    transcripts_dict = xblock.transcripts
+                    lang = getattr(xblock, 'transcript_language', 'en')
+                    if lang in transcripts_dict:
+                        transcript_filename = transcripts_dict[lang]
+                        file_content = self._load_transcript_file(xblock, transcript_filename)
+                        if file_content:
+                            parsed_content = self._parse_transcript_content(file_content)
+                            if parsed_content:
+                                return parsed_content
+                except Exception:
+                    pass
+            
+            # Method 3: Try using edx_video_id to get transcript
+            if hasattr(xblock, 'edx_video_id') and xblock.edx_video_id:
+                try:
+                    video_id = xblock.edx_video_id
+                    transcript_data = self._get_transcript_by_video_id(xblock, video_id)
+                    if transcript_data:
+                        parsed_content = self._parse_transcript_content(transcript_data)
+                        if parsed_content:
+                            return parsed_content
+                except Exception:
+                    pass
+            
+            return ""
+            
+        except Exception:
+            return ""
+
+    def _run_comprehensive_transcript_tests(self, xblock):
+        """Run comprehensive transcript extraction testing - results for debug only"""
+        if not hasattr(xblock, 'category') or xblock.category != 'video':
+            return "Not a video XBlock"
         
         debug_info = []
         transcript_content = ""
         
-        if self.debug_mode:
-            debug_info.append("=== TRANSCRIPT EXTRACTION TESTING ===")
+        debug_info.append("=== COMPREHENSIVE TRANSCRIPT EXTRACTION TESTING ===")
         
         try:
             # Method 1: Try calling the transcript() method directly
             if hasattr(xblock, 'transcript') and callable(xblock.transcript):
                 try:
-                    # The transcript method usually expects a request-like object
-                    # Let's try calling it and see what happens
                     transcript_result = xblock.transcript(None)
                     if transcript_result:
-                        if self.debug_mode:
-                            debug_info.append("✅ METHOD 1 SUCCESS: xblock.transcript() returned data")
-                            if hasattr(transcript_result, 'content'):
-                                debug_info.append(f"   Content type: {type(transcript_result.content)}")
-                                content_preview = str(transcript_result.content)[:200] + "..." if len(str(transcript_result.content)) > 200 else str(transcript_result.content)
-                                debug_info.append(f"   Content preview: {content_preview}")
-                            else:
-                                debug_info.append(f"   Result type: {type(transcript_result)}")
-                                result_preview = str(transcript_result)[:200] + "..." if len(str(transcript_result)) > 200 else str(transcript_result)
-                                debug_info.append(f"   Result preview: {result_preview}")
+                        debug_info.append("✅ METHOD 1 SUCCESS: xblock.transcript() returned data")
+                        if hasattr(transcript_result, 'content'):
+                            debug_info.append(f"   Content type: {type(transcript_result.content)}")
+                            content_preview = str(transcript_result.content)[:200] + "..." if len(str(transcript_result.content)) > 200 else str(transcript_result.content)
+                            debug_info.append(f"   Content preview: {content_preview}")
+                        else:
+                            debug_info.append(f"   Result type: {type(transcript_result)}")
+                            result_preview = str(transcript_result)[:200] + "..." if len(str(transcript_result)) > 200 else str(transcript_result)
+                            debug_info.append(f"   Result preview: {result_preview}")
                         
                         # Try to extract content from the result
                         if hasattr(transcript_result, 'content'):
@@ -316,62 +413,51 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
                         parsed_content = self._parse_transcript_content(content)
                         if parsed_content:
                             transcript_content = parsed_content
-                            if self.debug_mode:
-                                preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
-                                debug_info.append(f"   ✅ PARSED TRANSCRIPT: {preview}")
+                            preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
+                            debug_info.append(f"   ✅ PARSED TRANSCRIPT: {preview}")
                         
                 except Exception as e:
-                    if self.debug_mode:
-                        debug_info.append(f"❌ METHOD 1 FAILED: xblock.transcript() error: {str(e)}")
+                    debug_info.append(f"❌ METHOD 1 FAILED: xblock.transcript() error: {str(e)}")
             else:
-                if self.debug_mode:
-                    debug_info.append("❌ METHOD 1 N/A: No transcript method found")
+                debug_info.append("❌ METHOD 1 N/A: No transcript method found")
             
             # Method 2: Try getting transcript via transcripts attribute and file loading
             if not transcript_content and hasattr(xblock, 'transcripts') and xblock.transcripts:
                 try:
                     transcripts_dict = xblock.transcripts
-                    if self.debug_mode:
-                        debug_info.append(f"✅ METHOD 2: Found transcripts dict: {transcripts_dict}")
+                    debug_info.append(f"✅ METHOD 2: Found transcripts dict: {transcripts_dict}")
                     
                     # Try to get the transcript for the default language
                     lang = getattr(xblock, 'transcript_language', 'en')
                     if lang in transcripts_dict:
                         transcript_filename = transcripts_dict[lang]
-                        if self.debug_mode:
-                            debug_info.append(f"   Trying to load transcript file: {transcript_filename}")
+                        debug_info.append(f"   Trying to load transcript file: {transcript_filename}")
                         
                         # Try to load the transcript file
                         file_content = self._load_transcript_file(xblock, transcript_filename)
                         if file_content:
-                            if self.debug_mode:
-                                debug_info.append(f"   ✅ FILE LOADED: {len(file_content)} characters")
-                                content_preview = file_content[:200] + "..." if len(file_content) > 200 else file_content
-                                debug_info.append(f"   Raw content preview: {content_preview}")
+                            debug_info.append(f"   ✅ FILE LOADED: {len(file_content)} characters")
+                            content_preview = file_content[:200] + "..." if len(file_content) > 200 else file_content
+                            debug_info.append(f"   Raw content preview: {content_preview}")
                             
                             parsed_content = self._parse_transcript_content(file_content)
                             if parsed_content:
                                 transcript_content = parsed_content
-                                if self.debug_mode:
-                                    preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
-                                    debug_info.append(f"   ✅ PARSED TRANSCRIPT: {preview}")
+                                preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
+                                debug_info.append(f"   ✅ PARSED TRANSCRIPT: {preview}")
                         else:
-                            if self.debug_mode:
-                                debug_info.append(f"   ❌ FILE LOAD FAILED: Could not load {transcript_filename}")
+                            debug_info.append(f"   ❌ FILE LOAD FAILED: Could not load {transcript_filename}")
                     else:
-                        if self.debug_mode:
-                            debug_info.append(f"   ❌ LANGUAGE NOT FOUND: {lang} not in {list(transcripts_dict.keys())}")
+                        debug_info.append(f"   ❌ LANGUAGE NOT FOUND: {lang} not in {list(transcripts_dict.keys())}")
                         
                 except Exception as e:
-                    if self.debug_mode:
-                        debug_info.append(f"❌ METHOD 2 FAILED: Transcripts loading error: {str(e)}")
+                    debug_info.append(f"❌ METHOD 2 FAILED: Transcripts loading error: {str(e)}")
             
             # Method 3: Try using edx_video_id to get transcript
             if not transcript_content and hasattr(xblock, 'edx_video_id') and xblock.edx_video_id:
                 try:
                     video_id = xblock.edx_video_id
-                    if self.debug_mode:
-                        debug_info.append(f"✅ METHOD 3: Trying edx_video_id: {video_id}")
+                    debug_info.append(f"✅ METHOD 3: Trying edx_video_id: {video_id}")
                     
                     # Try to get transcript using the video API
                     transcript_data = self._get_transcript_by_video_id(xblock, video_id)
@@ -379,64 +465,55 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
                         parsed_content = self._parse_transcript_content(transcript_data)
                         if parsed_content:
                             transcript_content = parsed_content
-                            if self.debug_mode:
-                                preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
-                                debug_info.append(f"   ✅ VIDEO API SUCCESS: {preview}")
+                            preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
+                            debug_info.append(f"   ✅ VIDEO API SUCCESS: {preview}")
                         else:
-                            if self.debug_mode:
-                                debug_info.append(f"   ❌ PARSING FAILED: Could not parse transcript data")
+                            debug_info.append(f"   ❌ PARSING FAILED: Could not parse transcript data")
                     else:
-                        if self.debug_mode:
-                            debug_info.append(f"   ❌ VIDEO API FAILED: No transcript data returned")
-                            
+                        debug_info.append(f"   ❌ VIDEO API FAILED: No transcript data returned")
+                        
                 except Exception as e:
-                    if self.debug_mode:
-                        debug_info.append(f"❌ METHOD 3 FAILED: Video API error: {str(e)}")
+                    debug_info.append(f"❌ METHOD 3 FAILED: Video API error: {str(e)}")
             
             # Method 4: Try available_translations method
             if not transcript_content and hasattr(xblock, 'available_translations') and callable(xblock.available_translations):
                 try:
                     available_langs = xblock.available_translations()
-                    if self.debug_mode:
-                        debug_info.append(f"✅ METHOD 4: Available translations: {available_langs}")
+                    debug_info.append(f"✅ METHOD 4: Available translations: {available_langs}")
                     
                     if available_langs:
                         # Try the first available language
                         lang = list(available_langs)[0] if available_langs else 'en'
-                        # This method might give us access to more transcript methods
-                        if self.debug_mode:
-                            debug_info.append(f"   Attempting to use language: {lang}")
+                        debug_info.append(f"   Attempting to use language: {lang}")
                         
                         # Check if there are other transcript-related methods we can try
                         transcript_methods = [method for method in dir(xblock) if 'transcript' in method.lower()]
-                        if self.debug_mode:
-                            debug_info.append(f"   Available transcript methods: {transcript_methods}")
-                            
+                        debug_info.append(f"   Available transcript methods: {transcript_methods}")
+                        
                 except Exception as e:
-                    if self.debug_mode:
-                        debug_info.append(f"❌ METHOD 4 FAILED: Available translations error: {str(e)}")
+                    debug_info.append(f"❌ METHOD 4 FAILED: Available translations error: {str(e)}")
             
             # Final result summary
-            if self.debug_mode:
-                debug_info.append("=== TRANSCRIPT EXTRACTION SUMMARY ===")
-                if transcript_content:
-                    debug_info.append(f"🎉 SUCCESS: Extracted {len(transcript_content)} characters of transcript")
-                    # Show first few sentences for verification
-                    sentences = transcript_content.split('. ')[:3]
-                    preview = '. '.join(sentences) + ('...' if len(sentences) == 3 else '')
-                    debug_info.append(f"📝 CONTENT PREVIEW: {preview}")
-                else:
-                    debug_info.append("❌ FAILED: No transcript content extracted")
-                    debug_info.append("💡 TIP: Check if transcripts are properly uploaded in Studio")
+            debug_info.append("=== TRANSCRIPT EXTRACTION SUMMARY ===")
+            if transcript_content:
+                debug_info.append(f"🎉 SUCCESS: Extracted {len(transcript_content)} characters of transcript")
+                # Show first few sentences for verification
+                sentences = transcript_content.split('. ')[:3]
+                preview = '. '.join(sentences) + ('...' if len(sentences) == 3 else '')
+                debug_info.append(f"📝 CONTENT PREVIEW: {preview}")
+            else:
+                debug_info.append("❌ FAILED: No transcript content extracted")
+                debug_info.append("💡 TIP: Check if transcripts are properly uploaded in Studio")
             
-            return transcript_content if transcript_content else (f"\n{chr(10).join(debug_info)}" if self.debug_mode else "")
+            return '\n'.join(debug_info)
             
         except Exception as e:
-            error_msg = f"Error extracting video transcript: {str(e)}"
-            if self.debug_mode:
-                debug_info.append(f"🚨 CRITICAL ERROR: {error_msg}")
-                return f"\n{chr(10).join(debug_info)}"
-            return ""
+            debug_info.append(f"🚨 CRITICAL ERROR: {str(e)}")
+            return '\n'.join(debug_info)
+
+    def get_transcript_test_results(self):
+        """Get the results of comprehensive transcript testing (for debug display only)"""
+        return getattr(self, '_transcript_test_results', "No transcript tests have been run yet.")
 
     def _load_transcript_file(self, xblock, filename):
         """Try to load transcript file using various Open edX methods"""
@@ -669,22 +746,8 @@ Use this course content to provide relevant, accurate answers. Reference specifi
         except Exception as e:
             return {"answer": f"Moderation error: {str(e)}"}
 
-        # Build enhanced context with page content
+        # Build enhanced context with page content (NEVER includes debug info)
         enhanced_context = self.build_enhanced_context()
-
-        # Debug mode: show what content was extracted
-        debug_info = ""
-        if self.debug_mode:
-            page_content = self.get_page_content()
-            debug_info = f"""
-**DEBUG INFO:**
-Raw page content extracted: {repr(page_content)}
-
-Enhanced context being sent to ChatGPT:
-{enhanced_context}
-
----
-"""
 
         # Handle conversation history
         if self.enable_multi_turn:
@@ -704,15 +767,6 @@ Enhanced context being sent to ChatGPT:
                 {"role": "system", "content": enhanced_context},
                 {"role": "user", "content": question}
             ]
-
-        # Debug mode: add messages info
-        if self.debug_mode:
-            debug_info += f"""
-Messages being sent to OpenAI:
-{messages}
-
----
-"""
 
         # Call ChatGPT API
         try:
@@ -738,11 +792,20 @@ Messages being sent to OpenAI:
         if self.enable_multi_turn:
             self.conversation_history.append({"role": "assistant", "content": content})
 
-        # Prepend debug info if debug mode is enabled
+        # Prepare the response
+        response_data = {"answer": content}
+        
+        # Add debug information SEPARATELY - not sent to ChatGPT
         if self.debug_mode:
-            content = debug_info + content
+            debug_info = self.get_debug_info()
+            response_data["debug_info"] = debug_info
+            
+        # Add transcript test results if available
+        if self.test_transcript_extraction:
+            test_results = self.get_transcript_test_results()
+            response_data["transcript_test_results"] = test_results
 
-        return {"answer": content}
+        return response_data
 
     @XBlock.json_handler
     def submit_reflection(self, data, suffix=''):

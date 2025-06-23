@@ -99,6 +99,39 @@
     margin-bottom: 0;
 }
 
+/* Debug message styles */
+.chatgpt__message--debug {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-left: 4px solid #6c757d;
+    margin: 15px 0;
+    max-width: 100%;
+}
+
+.chatgpt__debug-title {
+    font-weight: 600;
+    color: #495057;
+    margin-bottom: 8px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid #dee2e6;
+    font-size: 14px;
+}
+
+.chatgpt__debug-content {
+    background: #ffffff;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    padding: 12px;
+    margin: 0;
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #212529;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .chatgpt__input-section {
     background: white;
     border-radius: 8px;

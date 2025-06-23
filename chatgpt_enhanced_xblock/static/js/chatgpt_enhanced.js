@@ -118,6 +118,17 @@ function ChatGPTEnhancedXBlock(runtime, element) {
             addAssistantMessage('Sorry, I encountered an error. Please try again.');
         } else if (response.answer) {
             addAssistantMessage(response.answer);
+            
+            // Display debug information separately if available
+            if (response.debug_info) {
+                addDebugMessage('Debug Information', response.debug_info);
+            }
+            
+            // Display transcript test results separately if available
+            if (response.transcript_test_results) {
+                addDebugMessage('Transcript Test Results', response.transcript_test_results);
+            }
+            
             showReflectionPrompt();
         } else {
             showStatus('Unexpected response format.', 'error');
@@ -333,6 +344,17 @@ function ChatGPTEnhancedXBlock(runtime, element) {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    function addDebugMessage(title, content) {
+        const debugHtml = `
+            <div class="chatgpt__message chatgpt__message--debug">
+                <div class="chatgpt__debug-title">${escapeHtml(title)}</div>
+                <pre class="chatgpt__debug-content">${escapeHtml(content)}</pre>
+            </div>
+        `;
+        $conversation.append(debugHtml);
+        scrollToBottom();
     }
 
     // Initialize when DOM is ready

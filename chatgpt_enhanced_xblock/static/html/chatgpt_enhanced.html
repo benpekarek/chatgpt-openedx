@@ -1,0 +1,38 @@
+<div class="chatgpt-enhanced-xblock-wrapper">
+    <div class="chatgpt__container">
+        <div class="chatgpt__header">
+            <h3 class="chatgpt__title">{self.display_name}</h3>
+            <p class="chatgpt__description">{self.description}</p>
+        </div>
+        
+        {disclaimer}
+        
+        <div class="chatgpt__chat-area">
+            <div class="chatgpt__conversation" id="conversation-history">
+                <!-- Conversation messages will be dynamically added here -->
+            </div>
+            
+            <div class="chatgpt__input-section">
+                <div class="chatgpt__input-group">
+                    <textarea id="user-question" 
+                             placeholder="Ask a question about the course content..." 
+                             rows="3"
+                             class="chatgpt__input"></textarea>
+                    <button id="submit-question" class="chatgpt__submit-btn">
+                        <span class="btn-text">Ask</span>
+                        <span class="btn-loading" style="display: none;">
+                            <span class="spinner"></span> Thinking...
+                        </span>
+                    </button>
+                </div>
+                <div class="chatgpt__input-help">
+                    <small>💡 Tip: Ask specific questions about the content on this page for more relevant answers.</small>
+                </div>
+            </div>
+        </div>
+        
+        {reflection}
+        
+        <div class="chatgpt__status" id="status-message" style="display: none;"></div>
+    </div>
+</div> 

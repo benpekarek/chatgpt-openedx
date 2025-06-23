@@ -1,0 +1,4 @@
+XBlock>=1.2.0
+xblock-utils>=2.0.0
+openai>=1.0.0
+requests>=2.25.0 

@@ -215,6 +215,40 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         """Extract meaningful content from different types of XBlocks"""
         content_parts = []
         
+        # Debug mode: show all attributes for video blocks
+        if self.debug_mode and hasattr(xblock, 'category') and xblock.category == 'video':
+            debug_attrs = []
+            debug_attrs.append(f"VIDEO DEBUG - XBlock type: {type(xblock).__name__}")
+            
+            # Check common video attributes
+            video_attrs_to_check = [
+                'transcripts', 'transcript', 'sub', 'available_translations',
+                'transcript_language', 'transcript_download_format',
+                'video_id', 'youtube_id_1_0', 'html5_sources',
+                'data', 'xml_attributes', 'fields'
+            ]
+            
+            for attr in video_attrs_to_check:
+                if hasattr(xblock, attr):
+                    value = getattr(xblock, attr)
+                    debug_attrs.append(f"  {attr}: {repr(value)}")
+                else:
+                    debug_attrs.append(f"  {attr}: NOT FOUND")
+            
+            # Check all attributes that might contain transcript info
+            all_attrs = [attr for attr in dir(xblock) if not attr.startswith('_')]
+            transcript_related = [attr for attr in all_attrs if 'transcript' in attr.lower() or 'sub' in attr.lower()]
+            if transcript_related:
+                debug_attrs.append(f"  All transcript-related attrs: {transcript_related}")
+                for attr in transcript_related:
+                    try:
+                        value = getattr(xblock, attr)
+                        debug_attrs.append(f"    {attr}: {repr(value)}")
+                    except Exception as e:
+                        debug_attrs.append(f"    {attr}: Error accessing - {e}")
+            
+            content_parts.append("VIDEO DEBUG INFO:\n" + "\n".join(debug_attrs))
+        
         # HTML XBlocks
         if hasattr(xblock, 'data') and xblock.data:
             html_content = str(xblock.data)
@@ -228,6 +262,8 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
             transcript_content = self._get_video_transcript_content(xblock)
             if transcript_content:
                 content_parts.append(f"Video transcript: {transcript_content}")
+            elif self.debug_mode:
+                content_parts.append("VIDEO DEBUG: No transcript content extracted by _get_video_transcript_content")
         
         # Problem XBlocks
         if hasattr(xblock, 'problem_text') and xblock.problem_text:

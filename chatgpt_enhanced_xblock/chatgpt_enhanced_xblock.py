@@ -276,168 +276,274 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
             
         return '\n'.join(content_parts)
 
-    def _get_video_transcript_content(self, video_xblock):
-        """Extract actual transcript content from video XBlocks"""
+    def _get_video_transcript_content(self, xblock):
+        """Extract actual transcript content from video XBlocks with comprehensive testing"""
+        if not hasattr(xblock, 'category') or xblock.category != 'video':
+            return ""
+        
+        debug_info = []
+        transcript_content = ""
+        
+        if self.debug_mode:
+            debug_info.append("=== TRANSCRIPT EXTRACTION TESTING ===")
+        
         try:
-            # Method 1: Check for transcript data in video XBlock fields
-            if hasattr(video_xblock, 'transcript'):
-                transcript_data = video_xblock.transcript
-                if transcript_data and isinstance(transcript_data, dict):
-                    # Extract text content from transcript entries
-                    transcript_text = self._parse_transcript_data(transcript_data)
-                    if transcript_text:
-                        return transcript_text
-            
-            # Method 2: Check transcripts field (Open edX stores transcripts here)
-            if hasattr(video_xblock, 'transcripts') and video_xblock.transcripts:
-                transcripts = video_xblock.transcripts
-                if isinstance(transcripts, dict):
-                    # Get the first available transcript
-                    for lang, transcript_file in transcripts.items():
-                        if transcript_file:
-                            transcript_content = self._load_transcript_file(transcript_file, video_xblock)
-                            if transcript_content:
-                                return transcript_content
-            
-            # Method 3: Check for sub (subtitle) field
-            if hasattr(video_xblock, 'sub') and video_xblock.sub:
-                transcript_content = self._load_transcript_file(video_xblock.sub, video_xblock)
-                if transcript_content:
-                    return transcript_content
-            
-            # Method 4: Check for available_translations
-            if hasattr(video_xblock, 'available_translations') and video_xblock.available_translations:
-                for lang in video_xblock.available_translations:
-                    transcript_content = self._get_transcript_for_language(video_xblock, lang)
-                    if transcript_content:
-                        return transcript_content
+            # Method 1: Try calling the transcript() method directly
+            if hasattr(xblock, 'transcript') and callable(xblock.transcript):
+                try:
+                    # The transcript method usually expects a request-like object
+                    # Let's try calling it and see what happens
+                    transcript_result = xblock.transcript(None)
+                    if transcript_result:
+                        if self.debug_mode:
+                            debug_info.append("✅ METHOD 1 SUCCESS: xblock.transcript() returned data")
+                            if hasattr(transcript_result, 'content'):
+                                debug_info.append(f"   Content type: {type(transcript_result.content)}")
+                                content_preview = str(transcript_result.content)[:200] + "..." if len(str(transcript_result.content)) > 200 else str(transcript_result.content)
+                                debug_info.append(f"   Content preview: {content_preview}")
+                            else:
+                                debug_info.append(f"   Result type: {type(transcript_result)}")
+                                result_preview = str(transcript_result)[:200] + "..." if len(str(transcript_result)) > 200 else str(transcript_result)
+                                debug_info.append(f"   Result preview: {result_preview}")
                         
-            return None
+                        # Try to extract content from the result
+                        if hasattr(transcript_result, 'content'):
+                            content = transcript_result.content
+                        else:
+                            content = str(transcript_result)
+                        
+                        # Parse SRT content if it looks like SRT
+                        parsed_content = self._parse_transcript_content(content)
+                        if parsed_content:
+                            transcript_content = parsed_content
+                            if self.debug_mode:
+                                preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
+                                debug_info.append(f"   ✅ PARSED TRANSCRIPT: {preview}")
+                        
+                except Exception as e:
+                    if self.debug_mode:
+                        debug_info.append(f"❌ METHOD 1 FAILED: xblock.transcript() error: {str(e)}")
+            else:
+                if self.debug_mode:
+                    debug_info.append("❌ METHOD 1 N/A: No transcript method found")
+            
+            # Method 2: Try getting transcript via transcripts attribute and file loading
+            if not transcript_content and hasattr(xblock, 'transcripts') and xblock.transcripts:
+                try:
+                    transcripts_dict = xblock.transcripts
+                    if self.debug_mode:
+                        debug_info.append(f"✅ METHOD 2: Found transcripts dict: {transcripts_dict}")
+                    
+                    # Try to get the transcript for the default language
+                    lang = getattr(xblock, 'transcript_language', 'en')
+                    if lang in transcripts_dict:
+                        transcript_filename = transcripts_dict[lang]
+                        if self.debug_mode:
+                            debug_info.append(f"   Trying to load transcript file: {transcript_filename}")
+                        
+                        # Try to load the transcript file
+                        file_content = self._load_transcript_file(xblock, transcript_filename)
+                        if file_content:
+                            if self.debug_mode:
+                                debug_info.append(f"   ✅ FILE LOADED: {len(file_content)} characters")
+                                content_preview = file_content[:200] + "..." if len(file_content) > 200 else file_content
+                                debug_info.append(f"   Raw content preview: {content_preview}")
+                            
+                            parsed_content = self._parse_transcript_content(file_content)
+                            if parsed_content:
+                                transcript_content = parsed_content
+                                if self.debug_mode:
+                                    preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
+                                    debug_info.append(f"   ✅ PARSED TRANSCRIPT: {preview}")
+                        else:
+                            if self.debug_mode:
+                                debug_info.append(f"   ❌ FILE LOAD FAILED: Could not load {transcript_filename}")
+                    else:
+                        if self.debug_mode:
+                            debug_info.append(f"   ❌ LANGUAGE NOT FOUND: {lang} not in {list(transcripts_dict.keys())}")
+                        
+                except Exception as e:
+                    if self.debug_mode:
+                        debug_info.append(f"❌ METHOD 2 FAILED: Transcripts loading error: {str(e)}")
+            
+            # Method 3: Try using edx_video_id to get transcript
+            if not transcript_content and hasattr(xblock, 'edx_video_id') and xblock.edx_video_id:
+                try:
+                    video_id = xblock.edx_video_id
+                    if self.debug_mode:
+                        debug_info.append(f"✅ METHOD 3: Trying edx_video_id: {video_id}")
+                    
+                    # Try to get transcript using the video API
+                    transcript_data = self._get_transcript_by_video_id(xblock, video_id)
+                    if transcript_data:
+                        parsed_content = self._parse_transcript_content(transcript_data)
+                        if parsed_content:
+                            transcript_content = parsed_content
+                            if self.debug_mode:
+                                preview = parsed_content[:300] + "..." if len(parsed_content) > 300 else parsed_content
+                                debug_info.append(f"   ✅ VIDEO API SUCCESS: {preview}")
+                        else:
+                            if self.debug_mode:
+                                debug_info.append(f"   ❌ PARSING FAILED: Could not parse transcript data")
+                    else:
+                        if self.debug_mode:
+                            debug_info.append(f"   ❌ VIDEO API FAILED: No transcript data returned")
+                            
+                except Exception as e:
+                    if self.debug_mode:
+                        debug_info.append(f"❌ METHOD 3 FAILED: Video API error: {str(e)}")
+            
+            # Method 4: Try available_translations method
+            if not transcript_content and hasattr(xblock, 'available_translations') and callable(xblock.available_translations):
+                try:
+                    available_langs = xblock.available_translations()
+                    if self.debug_mode:
+                        debug_info.append(f"✅ METHOD 4: Available translations: {available_langs}")
+                    
+                    if available_langs:
+                        # Try the first available language
+                        lang = list(available_langs)[0] if available_langs else 'en'
+                        # This method might give us access to more transcript methods
+                        if self.debug_mode:
+                            debug_info.append(f"   Attempting to use language: {lang}")
+                        
+                        # Check if there are other transcript-related methods we can try
+                        transcript_methods = [method for method in dir(xblock) if 'transcript' in method.lower()]
+                        if self.debug_mode:
+                            debug_info.append(f"   Available transcript methods: {transcript_methods}")
+                            
+                except Exception as e:
+                    if self.debug_mode:
+                        debug_info.append(f"❌ METHOD 4 FAILED: Available translations error: {str(e)}")
+            
+            # Final result summary
+            if self.debug_mode:
+                debug_info.append("=== TRANSCRIPT EXTRACTION SUMMARY ===")
+                if transcript_content:
+                    debug_info.append(f"🎉 SUCCESS: Extracted {len(transcript_content)} characters of transcript")
+                    # Show first few sentences for verification
+                    sentences = transcript_content.split('. ')[:3]
+                    preview = '. '.join(sentences) + ('...' if len(sentences) == 3 else '')
+                    debug_info.append(f"📝 CONTENT PREVIEW: {preview}")
+                else:
+                    debug_info.append("❌ FAILED: No transcript content extracted")
+                    debug_info.append("💡 TIP: Check if transcripts are properly uploaded in Studio")
+            
+            return transcript_content if transcript_content else (f"\n{chr(10).join(debug_info)}" if self.debug_mode else "")
             
         except Exception as e:
-            # Log error but don't break the content extraction
-            return None
+            error_msg = f"Error extracting video transcript: {str(e)}"
+            if self.debug_mode:
+                debug_info.append(f"🚨 CRITICAL ERROR: {error_msg}")
+                return f"\n{chr(10).join(debug_info)}"
+            return ""
 
-    def _parse_transcript_data(self, transcript_data):
-        """Parse transcript data structure to extract text content"""
+    def _load_transcript_file(self, xblock, filename):
+        """Try to load transcript file using various Open edX methods"""
         try:
-            if isinstance(transcript_data, str):
-                return transcript_data
-            elif isinstance(transcript_data, dict):
-                # Common transcript formats
-                text_parts = []
-                
-                # Format 1: Direct text entries
-                if 'text' in transcript_data:
-                    return transcript_data['text']
-                
-                # Format 2: Timed entries with text
-                if 'entries' in transcript_data:
-                    entries = transcript_data['entries']
-                    if isinstance(entries, list):
-                        for entry in entries:
-                            if isinstance(entry, dict) and 'text' in entry:
-                                text_parts.append(entry['text'])
-                
-                # Format 3: SRT-like format with timestamps
-                for key, value in transcript_data.items():
-                    if isinstance(value, dict) and 'text' in value:
-                        text_parts.append(value['text'])
-                    elif isinstance(value, str) and len(value) > 10:  # Likely text content
-                        text_parts.append(value)
-                
-                return ' '.join(text_parts) if text_parts else None
-            elif isinstance(transcript_data, list):
-                # List of transcript entries
-                text_parts = []
-                for entry in transcript_data:
-                    if isinstance(entry, dict) and 'text' in entry:
-                        text_parts.append(entry['text'])
-                    elif isinstance(entry, str):
-                        text_parts.append(entry)
-                return ' '.join(text_parts) if text_parts else None
-                
-            return None
-        except Exception:
-            return None
-
-    def _load_transcript_file(self, transcript_identifier, video_xblock):
-        """Load transcript content from file or URL"""
-        try:
-            # This would need to be implemented based on how your Open edX instance
-            # stores transcripts. Common patterns:
-            
-            # Method 1: Try to get transcript via the video XBlock's transcript handler
-            if hasattr(video_xblock, 'get_transcript'):
+            # Method 1: Try using the runtime's contentstore
+            if hasattr(xblock.runtime, 'contentstore') and hasattr(xblock.runtime.contentstore, 'find'):
                 try:
-                    transcript_content = video_xblock.get_transcript()
-                    if transcript_content:
-                        return self._parse_transcript_content(transcript_content)
+                    # Try to find the file in the contentstore
+                    course_key = xblock.scope_ids.usage_id.course_key
+                    file_location = course_key.make_asset_key('asset', filename)
+                    content = xblock.runtime.contentstore.find(file_location)
+                    if content and hasattr(content, 'data'):
+                        return content.data.decode('utf-8')
                 except Exception:
                     pass
             
-            # Method 2: Try runtime transcript service
-            if hasattr(self.runtime, 'service') and hasattr(video_xblock, 'location'):
+            # Method 2: Try using Open edX file system
+            if hasattr(xblock, 'runtime') and hasattr(xblock.runtime, 'resources_fs'):
                 try:
-                    transcript_service = self.runtime.service(video_xblock, 'transcript')
-                    if transcript_service:
-                        transcript_content = transcript_service.get_transcript(
-                            video_id=transcript_identifier,
-                            language='en'  # Default to English, could be made configurable
-                        )
-                        if transcript_content:
-                            return self._parse_transcript_content(transcript_content)
+                    fs = xblock.runtime.resources_fs
+                    if fs.exists(filename):
+                        return fs.open(filename, 'r').read()
                 except Exception:
                     pass
             
-            # Method 3: Direct field access for simple cases
-            if hasattr(video_xblock, 'transcript_text'):
-                return video_xblock.transcript_text
-                
+            # Method 3: Try getting via transcript API if available
+            if hasattr(xblock, 'get_transcript'):
+                try:
+                    lang = filename.split('-')[-1].replace('.srt', '') if '-' in filename else 'en'
+                    transcript_data = xblock.get_transcript(language=lang)
+                    if transcript_data:
+                        return transcript_data
+                except Exception:
+                    pass
+            
             return None
             
         except Exception:
             return None
 
-    def _get_transcript_for_language(self, video_xblock, language):
-        """Get transcript for a specific language"""
+    def _get_transcript_by_video_id(self, xblock, video_id):
+        """Try to get transcript using video ID through Open edX video API"""
         try:
-            if hasattr(video_xblock, 'get_transcript'):
-                transcript_content = video_xblock.get_transcript(language=language)
-                if transcript_content:
-                    return self._parse_transcript_content(transcript_content)
+            # Try importing Open edX video modules
+            try:
+                from openedx.core.djangoapps.video_config.models import VideoTranscriptEnabledFlag
+                from openedx.core.djangoapps.video_pipeline.api import get_transcript_data
+                
+                # Try to get transcript data
+                transcript_data = get_transcript_data(video_id, 'en')
+                if transcript_data:
+                    return transcript_data
+            except ImportError:
+                pass
+            
+            # Try alternative video API
+            try:
+                from cms.djangoapps.contentstore.video_storage_handlers import get_video_transcript
+                transcript = get_video_transcript(video_id, 'en')
+                if transcript:
+                    return transcript
+            except ImportError:
+                pass
+            
             return None
+            
         except Exception:
             return None
 
     def _parse_transcript_content(self, content):
-        """Parse raw transcript content (SRT, VTT, or plain text)"""
+        """Parse SRT or VTT transcript content to extract just the text"""
+        if not content:
+            return ""
+        
         try:
-            if isinstance(content, dict):
-                return self._parse_transcript_data(content)
-            elif isinstance(content, str):
-                # Remove SRT/VTT timestamps and formatting
-                lines = content.split('\n')
-                text_lines = []
-                
-                for line in lines:
-                    line = line.strip()
-                    # Skip empty lines, numbers, and timestamp lines
-                    if (line and 
-                        not line.isdigit() and 
-                        '-->' not in line and 
-                        not line.startswith('WEBVTT') and
-                        not line.startswith('NOTE')):
-                        # Remove HTML tags if present
-                        clean_line = re.sub(r'<[^>]+>', '', line)
-                        if clean_line.strip():
-                            text_lines.append(clean_line.strip())
-                
-                return ' '.join(text_lines) if text_lines else None
+            lines = content.split('\n')
+            text_lines = []
             
-            return None
+            # Parse SRT format
+            for line in lines:
+                line = line.strip()
+                # Skip empty lines, numbers, and timestamp lines
+                if (line and 
+                    not line.isdigit() and 
+                    '-->' not in line and
+                    not line.startswith('WEBVTT') and
+                    not line.startswith('NOTE')):
+                    
+                    # Remove SRT formatting tags
+                    import re
+                    clean_line = re.sub(r'<[^>]+>', '', line)  # Remove HTML tags
+                    clean_line = re.sub(r'\{[^}]+\}', '', clean_line)  # Remove SRT styling
+                    clean_line = clean_line.strip()
+                    
+                    if clean_line:
+                        text_lines.append(clean_line)
+            
+            # Join lines and clean up
+            transcript_text = ' '.join(text_lines)
+            # Remove extra whitespace
+            transcript_text = ' '.join(transcript_text.split())
+            
+            return transcript_text
+            
         except Exception:
-            return None
+            # If parsing fails, return the original content
+            return content[:1000] if len(content) > 1000 else content
 
     def _extract_problem_content(self, problem_xblock):
         """Extract meaningful text from problem XBlocks"""

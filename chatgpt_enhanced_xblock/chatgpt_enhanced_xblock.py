@@ -108,6 +108,13 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         help="Automatically include video transcripts from the current page in context"
     )
     
+    include_vimeo_transcripts = Boolean(
+        display_name="Include Vimeo Transcripts",
+        default=True,
+        scope=Scope.settings,
+        help="Automatically extract and include transcripts from embedded Vimeo videos"
+    )
+    
     max_content_length = Integer(
         display_name="Max Content Length",
         default=2000,
@@ -152,6 +159,7 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
         'max_conversation_length',
         'include_page_content',
         'include_video_transcripts',
+        'include_vimeo_transcripts',
         'max_content_length',
         'debug_mode',
         'test_transcript_extraction'
@@ -283,15 +291,23 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
             
             content_parts.append("VIDEO DEBUG INFO:\n" + "\n".join(debug_attrs))
         
-        # HTML XBlocks
+        # HTML XBlocks - check for both text content and embedded videos
         if hasattr(xblock, 'data') and xblock.data:
             html_content = str(xblock.data)
+            
+            # Check for Vimeo embedded videos and extract transcripts
+            if self.include_vimeo_transcripts:
+                vimeo_transcripts = self._extract_vimeo_transcripts(html_content)
+                if vimeo_transcripts:
+                    content_parts.append(f"Vimeo video transcripts: {vimeo_transcripts}")
+            
+            # Extract regular text content
             clean_text = re.sub(r'<[^>]+>', ' ', html_content)
             clean_text = re.sub(r'\s+', ' ', clean_text).strip()
             if clean_text and len(clean_text) > 20:
                 content_parts.append(f"Page content: {clean_text}")
         
-        # Video XBlocks with transcripts
+        # Video XBlocks with transcripts (keeping existing functionality for native video blocks)
         if self.include_video_transcripts and hasattr(xblock, 'category') and xblock.category == 'video':
             transcript_content = self._get_video_transcript_content(xblock)
             if transcript_content:
@@ -1095,3 +1111,201 @@ Use this course content to provide relevant, accurate answers. Reference specifi
                 </vertical_demo>
              """),
         ] 
+
+    def _extract_vimeo_transcripts(self, html_content):
+        """Extract transcripts from Vimeo videos embedded in HTML content"""
+        try:
+            import re
+            import requests
+            
+            # Extract Vimeo video IDs from iframe src URLs
+            vimeo_pattern = r'player\.vimeo\.com/video/(\d+)'
+            vimeo_matches = re.findall(vimeo_pattern, html_content)
+            
+            if not vimeo_matches:
+                return ""
+            
+            all_transcripts = []
+            
+            for video_id in vimeo_matches:
+                try:
+                    # Try to get Vimeo video transcript via their API
+                    transcript_content = self._get_vimeo_transcript(video_id)
+                    if transcript_content:
+                        all_transcripts.append(f"Video {video_id}: {transcript_content}")
+                        
+                except Exception as e:
+                    # If transcript extraction fails, continue with other videos
+                    if self.debug_mode:
+                        all_transcripts.append(f"Video {video_id}: Transcript extraction failed - {str(e)}")
+                    continue
+            
+            return '\n\n'.join(all_transcripts)
+            
+        except Exception:
+            return ""
+
+    def _get_vimeo_transcript(self, video_id):
+        """Get transcript content from a Vimeo video ID"""
+        try:
+            import requests
+            import json
+            
+            # Method 1: Try Vimeo's public API for video information
+            try:
+                # First get video information to check if transcripts are available
+                video_url = f"https://vimeo.com/api/v2/video/{video_id}.json"
+                response = requests.get(video_url, timeout=10)
+                
+                if response.status_code == 200:
+                    video_info = response.json()
+                    if self.debug_mode:
+                        # Add debug info about the video
+                        return f"Video found: {video_info[0].get('title', 'Unknown')} (Transcript API access requires authentication)"
+                        
+            except Exception:
+                pass
+            
+            # Method 2: Try to access Vimeo's transcript endpoint (may require authentication)
+            try:
+                # This is a common pattern for Vimeo transcript access
+                transcript_url = f"https://vimeo.com/{video_id}/transcript"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                
+                response = requests.get(transcript_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    # Parse HTML response to extract transcript content
+                    transcript_content = self._parse_vimeo_transcript_html(response.text)
+                    if transcript_content:
+                        return transcript_content
+                        
+            except Exception:
+                pass
+            
+            # Method 3: Try alternative Vimeo API endpoints
+            try:
+                # Some Vimeo videos have publicly accessible transcript data
+                api_url = f"https://player.vimeo.com/video/{video_id}/texttrack"
+                response = requests.get(api_url, timeout=10)
+                
+                if response.status_code == 200:
+                    # This might return VTT format transcript
+                    transcript_content = self._parse_transcript_content(response.text)
+                    if transcript_content:
+                        return transcript_content
+                        
+            except Exception:
+                pass
+            
+            # Method 4: Check for embedded transcript data in the video page
+            try:
+                video_page_url = f"https://vimeo.com/{video_id}"
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+                
+                response = requests.get(video_page_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    # Look for JSON data embedded in the page that might contain transcript info
+                    page_content = response.text
+                    
+                    # Extract any JSON data that might contain transcript information
+                    json_pattern = r'window\.vimeoPlayer\s*=\s*({.*?});'
+                    json_matches = re.findall(json_pattern, page_content, re.DOTALL)
+                    
+                    for json_str in json_matches:
+                        try:
+                            data = json.loads(json_str)
+                            # Look for transcript-related data in the JSON
+                            if 'transcript' in str(data).lower():
+                                # Extract any transcript data found
+                                transcript_data = self._extract_transcript_from_json(data)
+                                if transcript_data:
+                                    return transcript_data
+                        except Exception:
+                            continue
+                            
+            except Exception:
+                pass
+            
+            # If all methods fail, return empty string
+            return ""
+            
+        except Exception:
+            return ""
+
+    def _parse_vimeo_transcript_html(self, html_content):
+        """Parse HTML content from Vimeo transcript page"""
+        try:
+            import re
+            from html import unescape
+            
+            # Look for transcript content in various HTML structures
+            transcript_patterns = [
+                r'<div[^>]*class="[^"]*transcript[^"]*"[^>]*>(.*?)</div>',
+                r'<span[^>]*class="[^"]*transcript[^"]*"[^>]*>(.*?)</span>',
+                r'<p[^>]*class="[^"]*transcript[^"]*"[^>]*>(.*?)</p>',
+            ]
+            
+            for pattern in transcript_patterns:
+                matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                if matches:
+                    # Clean up the HTML content
+                    transcript_text = ' '.join(matches)
+                    # Remove HTML tags
+                    clean_text = re.sub(r'<[^>]+>', ' ', transcript_text)
+                    # Decode HTML entities
+                    clean_text = unescape(clean_text)
+                    # Clean up whitespace
+                    clean_text = ' '.join(clean_text.split())
+                    
+                    if clean_text and len(clean_text) > 50:  # Ensure we have substantial content
+                        return clean_text
+            
+            return ""
+            
+        except Exception:
+            return ""
+
+    def _extract_transcript_from_json(self, json_data):
+        """Extract transcript data from JSON objects"""
+        try:
+            import json
+            
+            # Convert to string for searching
+            data_str = json.dumps(json_data).lower()
+            
+            # Look for transcript-related keys
+            transcript_keys = ['transcript', 'captions', 'subtitles', 'srt', 'vtt']
+            
+            def search_nested(obj, target_keys):
+                """Recursively search for transcript data in nested objects"""
+                if isinstance(obj, dict):
+                    for key, value in obj.items():
+                        if any(target_key in key.lower() for target_key in target_keys):
+                            if isinstance(value, str) and len(value) > 50:
+                                return value
+                        # Recursively search nested objects
+                        result = search_nested(value, target_keys)
+                        if result:
+                            return result
+                elif isinstance(obj, list):
+                    for item in obj:
+                        result = search_nested(item, target_keys)
+                        if result:
+                            return result
+                return None
+            
+            transcript_data = search_nested(json_data, transcript_keys)
+            if transcript_data:
+                # Parse the transcript data (might be VTT, SRT, or plain text)
+                return self._parse_transcript_content(transcript_data)
+            
+            return ""
+            
+        except Exception:
+            return "" 

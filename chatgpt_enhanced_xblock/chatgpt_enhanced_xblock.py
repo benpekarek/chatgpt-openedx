@@ -723,69 +723,65 @@ class ChatGPTEnhancedXBlock(StudioEditableXBlockMixin, XBlock):
             if not parent or not hasattr(parent, 'children'):
                 return "No parent unit found for transcript testing"
             
-            # Find video XBlocks in the unit
-            video_results = []
+            # Find video XBlocks and HTML blocks with Vimeo videos
+            all_results = []
+            video_xblocks_found = 0
+            vimeo_videos_found = 0
+            
             for child_id in parent.children:
                 try:
                     child = self.runtime.get_block(child_id)
+                    
+                    # Test native video XBlocks
                     if hasattr(child, 'category') and child.category == 'video':
+                        video_xblocks_found += 1
                         test_results = self._run_comprehensive_transcript_tests(child)
                         
-                        # Format results for this video
+                        # Format results for this video XBlock
                         video_name = getattr(child, 'display_name', 'Unknown Video')
-                        formatted_results = [f"📹 VIDEO: {video_name}"]
-                        formatted_results.append("=" * 50)
+                        formatted_results = [f"📹 NATIVE VIDEO XBLOCK: {video_name}"]
+                        formatted_results.append("=" * 60)
                         
-                        # Group results by method
-                        method_groups = {}
-                        for result in test_results:
-                            method = result['method'].split()[0]  # Get METHOD 1, METHOD 2, etc.
-                            if method not in method_groups:
-                                method_groups[method] = []
-                            method_groups[method].append(result)
+                        # Group and format results
+                        success_found = self._format_transcript_test_results(test_results, formatted_results)
                         
-                        # Format each method group
-                        success_found = False
-                        for method in sorted(method_groups.keys()):
-                            results = method_groups[method]
-                            formatted_results.append(f"\n{method}:")
+                        all_results.append('\n'.join(formatted_results))
+                    
+                    # Test HTML blocks for embedded Vimeo videos
+                    elif hasattr(child, 'category') and child.category == 'html':
+                        if hasattr(child, 'data') and child.data:
+                            html_content = str(child.data)
                             
-                            for result in results:
-                                status = result['status']
-                                message = result['message']
-                                content_preview = result['content_preview']
+                            # Check if this HTML block contains Vimeo videos
+                            import re
+                            vimeo_pattern = r'player\.vimeo\.com/video/(\d+)'
+                            vimeo_matches = re.findall(vimeo_pattern, html_content)
+                            
+                            if vimeo_matches:
+                                vimeo_videos_found += len(vimeo_matches)
                                 
-                                if status == "✅" and content_preview:
-                                    success_found = True
-                                    formatted_results.append(f"  {status} {message}")
-                                    formatted_results.append(f"      📝 Content: {content_preview}")
-                                elif status == "✅":
-                                    formatted_results.append(f"  {status} {message}")
-                                elif status == "ℹ️":
-                                    formatted_results.append(f"  {status} {message}")
-                                else:
-                                    formatted_results.append(f"  {status} {message}")
-                        
-                        # Add summary
-                        formatted_results.append("\n" + "=" * 50)
-                        if success_found:
-                            formatted_results.append("🎉 SUCCESS: Found working transcript extraction method!")
-                        else:
-                            formatted_results.append("❌ NO SUCCESS: No method successfully extracted transcript content")
-                            formatted_results.append("💡 TROUBLESHOOTING:")
-                            formatted_results.append("   - Check if transcripts are uploaded in Studio")
-                            formatted_results.append("   - Verify video has associated transcript files")
-                            formatted_results.append("   - Try uploading transcript directly to video component")
-                        
-                        video_results.append('\n'.join(formatted_results))
-                        
+                                # Test Vimeo transcript extraction
+                                vimeo_results = self._test_vimeo_transcript_extraction(child, vimeo_matches, html_content)
+                                all_results.append(vimeo_results)
+                                
                 except Exception as child_error:
-                    video_results.append(f"Error processing child: {str(child_error)}")
+                    all_results.append(f"Error processing child: {str(child_error)}")
             
-            if not video_results:
-                return "No video XBlocks found in this unit"
+            # Add summary at the top
+            summary = []
+            summary.append("🔍 COMPREHENSIVE TRANSCRIPT TESTING RESULTS")
+            summary.append("=" * 60)
+            summary.append(f"📊 Found: {video_xblocks_found} native video XBlocks, {vimeo_videos_found} Vimeo videos")
+            summary.append("")
             
-            return '\n\n'.join(video_results)
+            if not video_xblocks_found and not vimeo_videos_found:
+                summary.append("❌ NO VIDEO CONTENT FOUND")
+                summary.append("💡 This unit contains no native video XBlocks or embedded Vimeo videos")
+                return '\n'.join(summary)
+            
+            # Combine summary with results
+            final_results = summary + all_results
+            return '\n'.join(final_results)
             
         except Exception as e:
             return f"Error running transcript tests: {str(e)}"
@@ -1308,4 +1304,181 @@ Use this course content to provide relevant, accurate answers. Reference specifi
             return ""
             
         except Exception:
-            return "" 
+            return ""
+
+    def _format_transcript_test_results(self, test_results, formatted_results):
+        """Format transcript test results for display"""
+        # Group results by method
+        method_groups = {}
+        for result in test_results:
+            method = result['method'].split()[0]  # Get METHOD 1, METHOD 2, etc.
+            if method not in method_groups:
+                method_groups[method] = []
+            method_groups[method].append(result)
+        
+        # Format each method group
+        success_found = False
+        for method in sorted(method_groups.keys()):
+            results = method_groups[method]
+            formatted_results.append(f"\n{method}:")
+            
+            for result in results:
+                status = result['status']
+                message = result['message']
+                content_preview = result['content_preview']
+                
+                if status == "✅" and content_preview:
+                    success_found = True
+                    formatted_results.append(f"  {status} {message}")
+                    formatted_results.append(f"      📝 Content: {content_preview}")
+                elif status == "✅":
+                    formatted_results.append(f"  {status} {message}")
+                elif status == "ℹ️":
+                    formatted_results.append(f"  {status} {message}")
+                else:
+                    formatted_results.append(f"  {status} {message}")
+        
+        # Add summary
+        formatted_results.append("\n" + "=" * 60)
+        if success_found:
+            formatted_results.append("🎉 SUCCESS: Found working transcript extraction method!")
+        else:
+            formatted_results.append("❌ NO SUCCESS: No method successfully extracted transcript content")
+            formatted_results.append("💡 TROUBLESHOOTING:")
+            formatted_results.append("   - Check if transcripts are uploaded in Studio")
+            formatted_results.append("   - Verify video has associated transcript files")
+            formatted_results.append("   - Try uploading transcript directly to video component")
+        
+        return success_found
+
+    def _test_vimeo_transcript_extraction(self, html_block, vimeo_video_ids, html_content):
+        """Test Vimeo transcript extraction from HTML block"""
+        try:
+            block_name = getattr(html_block, 'display_name', 'HTML Block')
+            results = [f"🎬 VIMEO VIDEOS IN HTML BLOCK: {block_name}"]
+            results.append("=" * 60)
+            results.append(f"📹 Found {len(vimeo_video_ids)} Vimeo video(s): {', '.join(vimeo_video_ids)}")
+            results.append("")
+            
+            # Test overall Vimeo extraction function
+            results.append("VIMEO EXTRACTION TESTING:")
+            try:
+                vimeo_transcripts = self._extract_vimeo_transcripts(html_content)
+                if vimeo_transcripts:
+                    results.append("✅ _extract_vimeo_transcripts() SUCCESS")
+                    results.append(f"📝 Content Preview: {vimeo_transcripts[:300]}...")
+                else:
+                    results.append("❌ _extract_vimeo_transcripts() returned empty content")
+            except Exception as e:
+                results.append(f"❌ _extract_vimeo_transcripts() failed: {str(e)}")
+            
+            results.append("")
+            
+            # Test individual video transcript extraction
+            for i, video_id in enumerate(vimeo_video_ids):
+                results.append(f"VIDEO {i+1}: Testing Vimeo ID {video_id}")
+                results.append("-" * 40)
+                
+                # Test each extraction method individually
+                individual_results = self._test_individual_vimeo_methods(video_id)
+                results.extend(individual_results)
+                results.append("")
+            
+            # Add troubleshooting section
+            results.append("=" * 60)
+            if vimeo_transcripts:
+                results.append("🎉 SUCCESS: Vimeo transcript extraction working!")
+                results.append("💡 Your ChatGPT responses will include Vimeo video content")
+            else:
+                results.append("❌ NO SUCCESS: Vimeo transcript extraction failed")
+                results.append("💡 POSSIBLE REASONS:")
+                results.append("   - Video transcripts not publicly available")
+                results.append("   - Vimeo API access restrictions")
+                results.append("   - Network connectivity issues")
+                results.append("   - Video privacy settings blocking access")
+                results.append("🔧 SOLUTIONS:")
+                results.append("   - Check if video has captions enabled in Vimeo")
+                results.append("   - Verify video is publicly accessible")
+                results.append("   - Consider manually adding transcript content to HTML")
+            
+            return '\n'.join(results)
+            
+        except Exception as e:
+            return f"Error testing Vimeo extraction: {str(e)}"
+
+    def _test_individual_vimeo_methods(self, video_id):
+        """Test individual Vimeo transcript extraction methods"""
+        results = []
+        
+        # Method 1: Vimeo API information
+        try:
+            import requests
+            video_url = f"https://vimeo.com/api/v2/video/{video_id}.json"
+            response = requests.get(video_url, timeout=10)
+            
+            if response.status_code == 200:
+                video_info = response.json()
+                title = video_info[0].get('title', 'Unknown')
+                duration = video_info[0].get('duration', 'Unknown')
+                results.append(f"✅ METHOD 1: Vimeo API access successful")
+                results.append(f"   📹 Title: {title}")
+                results.append(f"   ⏱️ Duration: {duration} seconds")
+            else:
+                results.append(f"❌ METHOD 1: Vimeo API returned status {response.status_code}")
+        except Exception as e:
+            results.append(f"❌ METHOD 1: Vimeo API failed - {str(e)}")
+        
+        # Method 2: Direct transcript endpoint
+        try:
+            import requests
+            transcript_url = f"https://vimeo.com/{video_id}/transcript"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(transcript_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                if 'transcript' in response.text.lower():
+                    results.append("✅ METHOD 2: Transcript endpoint accessible")
+                    results.append("   📝 Transcript content detected in response")
+                else:
+                    results.append("❌ METHOD 2: Transcript endpoint accessible but no transcript content")
+            else:
+                results.append(f"❌ METHOD 2: Transcript endpoint returned status {response.status_code}")
+        except Exception as e:
+            results.append(f"❌ METHOD 2: Transcript endpoint failed - {str(e)}")
+        
+        # Method 3: Texttrack API
+        try:
+            import requests
+            api_url = f"https://player.vimeo.com/video/{video_id}/texttrack"
+            response = requests.get(api_url, timeout=10)
+            
+            if response.status_code == 200 and response.text.strip():
+                results.append("✅ METHOD 3: Texttrack API returned content")
+                results.append(f"   📄 Content length: {len(response.text)} characters")
+            else:
+                results.append(f"❌ METHOD 3: Texttrack API returned status {response.status_code} or empty content")
+        except Exception as e:
+            results.append(f"❌ METHOD 3: Texttrack API failed - {str(e)}")
+        
+        # Method 4: Video page JSON extraction
+        try:
+            import requests
+            video_page_url = f"https://vimeo.com/{video_id}"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(video_page_url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                if 'transcript' in response.text.lower() or 'caption' in response.text.lower():
+                    results.append("✅ METHOD 4: Video page contains transcript/caption references")
+                else:
+                    results.append("❌ METHOD 4: Video page accessible but no transcript references found")
+            else:
+                results.append(f"❌ METHOD 4: Video page returned status {response.status_code}")
+        except Exception as e:
+            results.append(f"❌ METHOD 4: Video page access failed - {str(e)}")
+        
+        return results 
